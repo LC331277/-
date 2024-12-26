@@ -1,90 +1,70 @@
-from web3 import Web3
-import random
+from web3 import Web3
+import random
+import logging
+from tabulate import tabulate
 
-# BASE 网络 RPC URL
-BASE_RPC_URL = "https://mainnet.base.org"
-web3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+# 配置日志
+logging.basicConfig(level=logging.INFO)
 
-def get_token_balances(token_contract_address, block_number, holders):
-    """
-    获取指定块号的所有代币持有者及其余额。
-    """
-    token_abi = [
-        {
-            "constant": True,
-            "inputs": [{"name": "_owner", "type": "address"}],
-            "name": "balanceOf",
-            "outputs": [{"name": "balance", "type": "uint256"}],
-            "type": "function",
-        }
-    ]
-    contract = web3.eth.contract(address=Web3.to_checksum_address(token_contract_address), abi=token_abi)
-    balances = {}
+# BASE 网络 RPC URL
+BASE_RPC_URL = "https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID"  # 替换为你的RPC URL
+web3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
 
-    for holder in holders:
-        balance = contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number)
-        if balance > 0:
-            balances[holder] = balance
+def get_token_balances(token_contract_address, block_number, holders):
+    token_abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
+    try:
+        contract = web3.eth.contract(address=Web3.to_checksum_address(token_contract_address), abi=token_abi)
+        return {holder: contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number) for holder in holders if contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number) > 0}
+    except Exception as e:
+        logging.error(f"Error in get_token_balances for {token_contract_address}: {e}")
+        return {}
 
-    return balances
+def weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders, num_winners=100):
+    try:
+        balances = {}
+        for contract_address in [ar_contract, aistr_contract, alch_contract]:
+            balances.update(get_token_balances(contract_address, block_number, holders))
 
-def weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders, num_winners=100):
-    """
-    根据加权随机算法选择去重的获胜者。
-    """
-    ar_balances = get_token_balances(ar_contract, block_number, holders)
-    aistr_balances = get_token_balances(aistr_contract, block_number, holders)
-    alch_balances = get_token_balances(alch_contract, block_number, holders)
+        total_weight = sum(balances.values())
+        if total_weight == 0:
+            logging.warning("Total weight is zero, no winners can be selected.")
+            return []
 
-    combined_balances = {}
-    total_weight = 0
+        probabilities = {address: balance / total_weight for address, balance in balances.items()}
+        winners = random.choices(list(probabilities.keys()), weights=list(probabilities.values()), k=num_winners)
 
-    for address in holders:
-        total_balance = ar_balances.get(address, 0) + aistr_balances.get(address, 0) + alch_balances.get(address, 0)
-        if total_balance > 0:
-            combined_balances[address] = total_balance
-            total_weight += total_balance
+        # 去重（虽然random.choices在Python 3.6+保证不重复选取）
+        unique_winners = list(dict.fromkeys(winners))
 
-    # 创建加权列表，但去重抽奖
-    weighted_addresses = [
-        (address, combined_balances[address])
-        for address in combined_balances.keys()
-    ]
+        # 获取余额信息
+        detailed_winners = []
+        for winner in unique_winners:
+            detailed_winners.append({
+                "address": winner,
+                "ar_balance": balances.get(winner, 0),
+                "aistr_balance": balances.get(winner, 0),
+                "alch_balance": balances.get(winner, 0)
+            })
 
-    # 根据权重随机抽取不重复的获胜者
-    winners = []
-    selected_addresses = set()
+        return detailed_winners
+    except Exception as e:
+        logging.error(f"Error in weighted_random_selection: {e}")
+        return []
 
-    while len(winners) < num_winners and weighted_addresses:
-        total_weight = sum(weight for _, weight in weighted_addresses)
-        rand = random.uniform(0, total_weight)
-        cumulative_weight = 0
+# 使用示例
+if __name__ == "__main__":
+    block_number = 12345678  # 替换为实际区块号
+    ar_contract = "0x3e43cB385A6925986e7ea0f0dcdAEc06673d4e10"
+    aistr_contract = "0x20ef84969f6d81ff74ae4591c331858b20ad82cd"
+    alch_contract = "0x2b0772bea2757624287ffc7feb92d03aeae6f12d"
 
-        for i, (address, weight) in enumerate(weighted_addresses):
-            cumulative_weight += weight
-            if rand <= cumulative_weight:
-                if address not in selected_addresses:
-                    winners.append({
-                        "address": address,
-                        "ar_balance": ar_balances.get(address, 0),
-                        "aistr_balance": aistr_balances.get(address, 0),
-                        "alch_balance": alch_balances.get(address, 0),
-                    })
-                    selected_addresses.add(address)
-                weighted_addresses.pop(i)  # 移除已选中的地址
-                break
+    holders = ["0xAlice", "0xBob", "0xCharlie"]  # 替换为实际持有者地址
 
-    return winners
+    winners = weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders)
 
-# 使用示例
-block_number = 12345678
-ar_contract = "0x3e43cB385A6925986e7ea0f0dcdAEc06673d4e10"
-aisstr_contract = "0x20ef84969f6d81ff74ae4591c331858b20ad82cd"
-alch_contract = "0x2b0772bea2757624287ffc7feb92d03aeae6f12d"
-
-# 示例持有者地址（替换为实际快照数据）
-holders = ["0xAlice", "0xBob", "0xCharlie"]  # 示例数据
-
-winners = weighted_random_selection(block_number, ar_contract, aisstr_contract, alch_contract, holders)
-for winner in winners:
-    print(winner)
+    if winners:
+        headers = ["Address", "AR Balance", "AISTR Balance", "ALCH Balance"]
+        table = [[winner["address"], winner["ar_balance"], winner["aistr_balance"], winner["alch_balance"]] for winner in winners]
+        print(tabulate(table, headers=headers, tablefmt="grid"))
+    else:
+        print("No winners selected.")
