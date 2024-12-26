@@ -1,0 +1,90 @@
+from web3 import Web3
+import random
+
+# BASE 网络 RPC URL
+BASE_RPC_URL = "https://mainnet.base.org"
+web3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+
+def get_token_balances(token_contract_address, block_number, holders):
+    """
+    获取指定块号的所有代币持有者及其余额。
+    """
+    token_abi = [
+        {
+            "constant": True,
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "name": "balanceOf",
+            "outputs": [{"name": "balance", "type": "uint256"}],
+            "type": "function",
+        }
+    ]
+    contract = web3.eth.contract(address=Web3.to_checksum_address(token_contract_address), abi=token_abi)
+    balances = {}
+
+    for holder in holders:
+        balance = contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number)
+        if balance > 0:
+            balances[holder] = balance
+
+    return balances
+
+def weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders, num_winners=100):
+    """
+    根据加权随机算法选择去重的获胜者。
+    """
+    ar_balances = get_token_balances(ar_contract, block_number, holders)
+    aistr_balances = get_token_balances(aistr_contract, block_number, holders)
+    alch_balances = get_token_balances(alch_contract, block_number, holders)
+
+    combined_balances = {}
+    total_weight = 0
+
+    for address in holders:
+        total_balance = ar_balances.get(address, 0) + aistr_balances.get(address, 0) + alch_balances.get(address, 0)
+        if total_balance > 0:
+            combined_balances[address] = total_balance
+            total_weight += total_balance
+
+    # 创建加权列表，但去重抽奖
+    weighted_addresses = [
+        (address, combined_balances[address])
+        for address in combined_balances.keys()
+    ]
+
+    # 根据权重随机抽取不重复的获胜者
+    winners = []
+    selected_addresses = set()
+
+    while len(winners) < num_winners and weighted_addresses:
+        total_weight = sum(weight for _, weight in weighted_addresses)
+        rand = random.uniform(0, total_weight)
+        cumulative_weight = 0
+
+        for i, (address, weight) in enumerate(weighted_addresses):
+            cumulative_weight += weight
+            if rand <= cumulative_weight:
+                if address not in selected_addresses:
+                    winners.append({
+                        "address": address,
+                        "ar_balance": ar_balances.get(address, 0),
+                        "aistr_balance": aistr_balances.get(address, 0),
+                        "alch_balance": alch_balances.get(address, 0),
+                    })
+                    selected_addresses.add(address)
+                weighted_addresses.pop(i)  # 移除已选中的地址
+                break
+
+    return winners
+
+# 使用示例
+block_number = 12345678
+ar_contract = "0x3e43cB385A6925986e7ea0f0dcdAEc06673d4e10"
+aisstr_contract = "0x20ef84969f6d81ff74ae4591c331858b20ad82cd"
+alch_contract = "0x2b0772bea2757624287ffc7feb92d03aeae6f12d"
+
+# 示例持有者地址（替换为实际快照数据）
+holders = ["0xAlice", "0xBob", "0xCharlie"]  # 示例数据
+
+winners = weighted_random_selection(block_number, ar_contract, aisstr_contract, alch_contract, holders)
+for winner in winners:
+    print(winner)
