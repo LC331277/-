@@ -1,70 +1,87 @@
 from web3 import Web3
 import random
 import logging
+import requests
 from tabulate import tabulate
+
+
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 
-# BASE 网络 RPC URL
-BASE_RPC_URL = "https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID"  # 替换为你的RPC URL
+# BASE网络RPC URL
+BASE_RPC_URL = "https://mainnet.infura.io/v3/f194530786ba4a798f01ea207ec1078c"
 web3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
 
-def get_token_balances(token_contract_address, block_number, holders):
-    token_abi = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf", "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"}]
-    try:
-        contract = web3.eth.contract(address=Web3.to_checksum_address(token_contract_address), abi=token_abi)
-        return {holder: contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number) for holder in holders if contract.functions.balanceOf(Web3.to_checksum_address(holder)).call(block_identifier=block_number) > 0}
-    except Exception as e:
-        logging.error(f"Error in get_token_balances for {token_contract_address}: {e}")
-        return {}
+# BaseScan API配置
+BASESCAN_API_URL = "https://api.basescan.org/api"
+API_KEY = "W8S9P85I8ZWJ34XYRINW11IU39NME6CFQ6"
+CONTRACT_ADDRESS = "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"
+PAGE = 1
+OFFSET = 10
 
-def weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders, num_winners=100):
-    try:
-        balances = {}
-        for contract_address in [ar_contract, aistr_contract, alch_contract]:
-            balances.update(get_token_balances(contract_address, block_number, holders))
 
-        total_weight = sum(balances.values())
-        if total_weight == 0:
-            logging.warning("Total weight is zero, no winners can be selected.")
+
+def get_token_holders_from_api(contract_address, page, offset, exclude_address=None):
+    params = {
+        "module": "token",
+        "action": "tokenholderlist",
+        "contractaddress": contract_address,
+        "page": page,
+        "offset": offset,
+        "apikey": API_KEY
+    }
+    try:
+        response = requests.get(BASESCAN_API_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("status") == "1":
+            holders = [item["address"] for item in data.get("result", [])]
+            if exclude_address and holder.lower() == exclude_address.lower():
+                holders.remove(holder)
+            return holders
+        else:
+            logging.warning(f"API returned error: {data.get('message')}")
             return []
-
-        probabilities = {address: balance / total_weight for address, balance in balances.items()}
-        winners = random.choices(list(probabilities.keys()), weights=list(probabilities.values()), k=num_winners)
-
-        # 去重（虽然random.choices在Python 3.6+保证不重复选取）
-        unique_winners = list(dict.fromkeys(winners))
-
-        # 获取余额信息
-        detailed_winners = []
-        for winner in unique_winners:
-            detailed_winners.append({
-                "address": winner,
-                "ar_balance": balances.get(winner, 0),
-                "aistr_balance": balances.get(winner, 0),
-                "alch_balance": balances.get(winner, 0)
-            })
-
-        return detailed_winners
     except Exception as e:
-        logging.error(f"Error in weighted_random_selection: {e}")
+        logging.error(f"Error fetching token holders from API: {e}")
         return []
 
-# 使用示例
-if __name__ == "__main__":
-    block_number = 12345678  # 替换为实际区块号
-    ar_contract = "0x3e43cB385A6925986e7ea0f0dcdAEc06673d4e10"
-    aistr_contract = "0x20ef84969f6d81ff74ae4591c331858b20ad82cd"
-    alch_contract = "0x2b0772bea2757624287ffc7feb92d03aeae6f12d"
 
-    holders = ["0xAlice", "0xBob", "0xCharlie"]  # 替换为实际持有者地址
 
-    winners = weighted_random_selection(block_number, ar_contract, aistr_contract, alch_contract, holders)
+def get_token_balances(token_contract_address, block_number, holders):
+    token_abi = [{"constant": True, "inputs": [{"name": "_owner"}], "name": "balanceOf", "outputs": [{"name": "balance"}], "type": "function"}]
+    contract = web3.eth.contract(address=token_contract_address, abi=token_abi)
+    balances = {holder: contract.functions.balanceOf(holder).call(block_identifier=block_number) for holder in holders if contract.functions.balanceOf(holder).call(block_identifier=block_number) > 0}
+    return balances
 
+
+
+def weighted_random_selection(block_number, holders, num_winners=100):
+    balances = get_token_balances(CONTRACT_ADDRESS, block_number, holders)
+    total_weight = sum(balances.values())
+    if total_weight == 0:
+        return []
+    probabilities = {address: balance / total_weight for address, balance in balances.items()}
+    winners = random.choices(list(probabilities.keys()), weights=list(probabilities.values()), k=num_winners)
+    return list(dict.fromkeys(winners))
+
+
+
+def main():
+    block_number = web3.eth.block_number
+    holders = get_token_holders_from_api(CONTRACT_ADDRESS, PAGE, OFFSET, "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1")
+    if not holders:
+        logging.error("No holders fetched.")
+        return
+    winners = weighted_random_selection(block_number, holders)
     if winners:
-        headers = ["Address", "AR Balance", "AISTR Balance", "ALCH Balance"]
-        table = [[winner["address"], winner["ar_balance"], winner["aistr_balance"], winner["alch_balance"]] for winner in winners]
-        print(tabulate(table, headers=headers, tablefmt="grid"))
+        print("Winners:")
+        print(tabulate([[winner, get_token_balances(CONTRACT_ADDRESS, block_number, [winner])[winner]] for winner in winners], headers=["Address", "Balance"], tablefmt="pretty"))
     else:
         print("No winners selected.")
+
+
+
+if __name__ == "__main__":
+    main()
